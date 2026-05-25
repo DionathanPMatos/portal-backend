@@ -1,0 +1,13 @@
+# Dependências
+node_modules/
+/dist
+/build
+
+# Variáveis de ambiente (senhas e configs locais)
+.env
+.env.local
+
+# Arquivos do sistema
+.DS_Store
+Thumbs.db
+/generated/prisma

@@ -1,0 +1,362 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = "postgresql://postgres:dca%231234@localhost:5433/portal_dca?schema=public"
+}
+
+/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
+model cargos {
+  id         Int
+  nome_cargo String? @db.VarChar(255)
+
+  @@ignore
+}
+
+/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
+model cliente_contatos {
+  id          Int
+  cliente_id  Int
+  nome        String?  @db.VarChar(255)
+  cargo       String?  @db.VarChar(120)
+  email       String?  @db.VarChar(255)
+  telefone    String?  @db.VarChar(30)
+  whatsapp    String?  @db.VarChar(30)
+  principal   Int
+  observacoes String?
+  created_at  DateTime @db.Timestamp(6)
+  updated_at  DateTime @db.Timestamp(6)
+
+  @@ignore
+}
+
+/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
+model cliente_documentos {
+  id          Int
+  cliente_id  Int
+  nome        String?  @db.VarChar(255)
+  tipo        String?  @db.VarChar(80)
+  arquivo_url String?  @db.VarChar(255)
+  criado_por  Int?
+  created_at  DateTime @db.Timestamp(6)
+
+  @@ignore
+}
+
+/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
+model cliente_faturamento {
+  id          Int
+  cliente_id  Int
+  competencia DateTime @db.Date
+  valor       Decimal? @db.Decimal(15, 2)
+  fonte       String?  @db.VarChar(60)
+  created_at  DateTime @db.Timestamp(6)
+
+  @@ignore
+}
+
+/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
+model cliente_filiais {
+  id          Int
+  cliente_id  Int
+  cnpj_filial String?  @db.VarChar(14)
+  nome_filial String?  @db.VarChar(255)
+  created_at  DateTime @db.Timestamp(6)
+
+  @@ignore
+}
+
+/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
+model clientes {
+  id                 Int       @default(autoincrement())
+  nome_cliente       String?   @db.VarChar(255)
+  razao_social       String?   @db.VarChar(255)
+  nome_fantasia      String?   @db.VarChar(255)
+  cnpj_cpf           String?   @db.VarChar(20)
+  cnpj_matriz        String?   @db.VarChar(14)
+  contato_principal  String?   @db.VarChar(255)
+  email_contato      String?   @db.VarChar(255)
+  telefone_contato   String?   @db.VarChar(20)
+  created_at         DateTime  @db.Timestamp(6)
+  updated_at         DateTime  @db.Timestamp(6)
+  inscricao_estadual String?   @db.VarChar(30)
+  site               String?   @db.VarChar(255)
+  observacoes        String?
+  cep                String?   @db.VarChar(8)
+  logradouro         String?   @db.VarChar(255)
+  numero             String?   @db.VarChar(30)
+  complemento        String?   @db.VarChar(255)
+  bairro             String?   @db.VarChar(255)
+  cidade             String?   @db.VarChar(255)
+  uf                 String?   @db.VarChar(2)
+  ativo              Int
+  deleted_at         DateTime? @db.Timestamp(6)
+  segmento           String?   @db.VarChar(100)
+  perfil             String?   @db.VarChar(13)
+
+  @@ignore
+}
+
+/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
+model fabricante_documentos {
+  id              Int
+  fabricante_id   Int?
+  nome_arquivo    String?  @db.VarChar(255)
+  caminho_arquivo String?  @db.VarChar(255)
+  data_upload     DateTime @db.Timestamp(6)
+  descricao       String?
+  usuario_id      Int?
+
+  @@ignore
+}
+
+/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
+model fabricante_key_accounts {
+  id               Int
+  fabricante_id    Int?
+  regiao           String? @db.VarChar(255)
+  nome_key_account String? @db.VarChar(255)
+  email            String? @db.VarChar(255)
+  telefone         String? @db.VarChar(50)
+
+  @@ignore
+}
+
+/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
+model fabricante_responsaveis {
+  fabricante_id  Int
+  funcionario_id Int
+
+  @@ignore
+}
+
+/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
+model fabricantes {
+  id                 Int
+  name               String? @db.VarChar(255)
+  logo_base64        String?
+  info               String?
+  responsavel_id     Int?
+  file_url           String? @db.VarChar(255)
+  resumo             String?
+  registro_projeto   String?
+  portfolio          String?
+  treinamentos       String?
+  politica_comercial String?
+
+  @@ignore
+}
+
+/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
+model funcionarios {
+  id             Int
+  nome_completo  String? @db.VarChar(255)
+  email          String? @db.VarChar(255)
+  contato        String? @db.VarChar(50)
+  setor          String? @db.VarChar(100)
+  setor_id       Int?
+  userpic_base64 String?
+  privilegios    String? @db.VarChar(7)
+  cargo_id       Int?
+
+  @@ignore
+}
+
+/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
+model integradores {
+  id   Int
+  nome String? @db.VarChar(255)
+
+  @@ignore
+}
+
+/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
+model leads {
+  id             Int
+  titulo         String?  @db.VarChar(255)
+  cnpj           String?  @db.VarChar(20)
+  setor          String?  @db.VarChar(100)
+  regiao         String?  @db.VarChar(100)
+  cidade         String?  @db.VarChar(255)
+  fonte          String?  @db.VarChar(255)
+  termo_pesquisa String?  @db.VarChar(255)
+  status         String?  @db.VarChar(50)
+  data_sugerida  DateTime @db.Timestamp(6)
+  snippet        String?
+  link           String?  @db.VarChar(2048)
+
+  @@ignore
+}
+
+/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
+model oportunidades {
+  id                 Int
+  titulo             String?   @db.VarChar(255)
+  descricao          String?
+  fonte              String?   @db.VarChar(255)
+  url                String?   @db.VarChar(1024)
+  data_publicacao    DateTime? @db.Date
+  tipo               String?   @db.VarChar(7)
+  vertical           String?   @db.VarChar(16)
+  prioridade         String?   @db.VarChar(5)
+  score_oportunidade Int?
+  insight_ia         String?
+  entidades_chave    String?
+  is_viewed          Int
+  status             String?   @db.VarChar(11)
+  data_criacao       DateTime  @db.Timestamp(6)
+
+  @@ignore
+}
+
+/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
+model projeto_atividades {
+  id                      Int
+  projeto_id              Int
+  usuario_id              Int?
+  tipo_atividade          String?   @db.VarChar(7)
+  data_conclusao_prevista DateTime? @db.Timestamp(6)
+  concluida               Int
+  descricao               String?
+  data_prazo              DateTime? @db.Timestamp(6)
+  status_tarefa           String?   @db.VarChar(9)
+  data_criacao            DateTime  @db.Timestamp(6)
+
+  @@ignore
+}
+
+/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
+model projeto_documentos {
+  id              Int
+  projeto_id      Int
+  nome_original   String?  @db.VarChar(255)
+  caminho_arquivo String?  @db.VarChar(255)
+  tipo_documento  String?  @db.VarChar(50)
+  uploaded_at     DateTime @db.Timestamp(6)
+
+  @@ignore
+}
+
+/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
+model projeto_pedidos {
+  id            Int
+  projeto_id    Int
+  numero_pedido String?  @db.VarChar(50)
+  created_at    DateTime @db.Timestamp(6)
+
+  @@ignore
+}
+
+/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
+model projetos {
+  id                         Int
+  nome_projeto               String?   @db.VarChar(255)
+  cliente_id                 Int?
+  valor_estimado             Decimal?  @db.Decimal(15, 2)
+  moeda                      String?   @db.VarChar(10)
+  data_fechamento_prevista   DateTime? @db.Date
+  etapa_funil                String?   @db.VarChar(33)
+  tipo_projeto               String?   @db.VarChar(50)
+  segmentacao_id             Int?
+  vertical_id                Int?
+  integrador_id              Int?
+  numero_registro_fabricante String?   @db.VarChar(255)
+  vendedor_id                Int?
+  dtc_responsavel_id         Int?
+  compras_responsavel_id     Int?
+  financeiro_responsavel_id  Int?
+  status_proposta_dtc        String?   @db.VarChar(18)
+  status_analise_credito     String?   @db.VarChar(9)
+  justificativa_credito      String?
+  status_compra              String?   @db.VarChar(17)
+  numero_pedido              String?   @db.VarChar(100)
+  motivo_perda               String?   @db.VarChar(255)
+  created_at                 DateTime  @db.Timestamp(6)
+  updated_at                 DateTime  @db.Timestamp(6)
+
+  @@ignore
+}
+
+/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
+model projetos_colaboradores {
+  projeto_id     Int
+  funcionario_id Int
+
+  @@ignore
+}
+
+/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
+model projetos_fabricantes {
+  projeto_id    Int
+  fabricante_id Int
+
+  @@ignore
+}
+
+/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
+model segmentacoes {
+  id   Int
+  nome String? @db.VarChar(255)
+
+  @@ignore
+}
+
+/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
+model setores {
+  id         Int
+  nome_setor String? @db.VarChar(255)
+
+  @@ignore
+}
+
+/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
+model solicitacoes_compra {
+  id                            Int
+  projeto_id                    Int
+  projeto_pedido_id             Int?
+  solicitante_id                Int?
+  data_solicitacao              DateTime  @db.Timestamp(6)
+  itens_faltantes               String?
+  status                        String?   @db.VarChar(10)
+  data_prevista_disponibilidade DateTime? @db.Date
+  responsavel_id                Int?
+
+  @@ignore
+}
+
+/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
+model system_settings {
+  setting_key   String? @unique(map: "unique_setting_key") @db.VarChar(50)
+  setting_value String?
+
+  @@ignore
+}
+
+/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
+model vendors {
+  id        Int
+  name      String?  @db.VarChar(255)
+  sales     Decimal? @db.Decimal(10, 2)
+  photo_url String?  @db.VarChar(255)
+
+  @@ignore
+}
+
+/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
+model verticais {
+  id   Int
+  nome String? @db.VarChar(255)
+
+  @@ignore
+}
+
+  model RegistroVenda {
+  id              Int      @id @default(autoincrement())
+  dataVenda       DateTime 
+  vendedor        String   
+  valorTotal      Float    
+  dadosAdicionais Json     
+  createdAt       DateTime @default(now())
+}
