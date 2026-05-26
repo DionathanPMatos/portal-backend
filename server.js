@@ -70,7 +70,14 @@ const authAgent = require('./authAgent');
 // SEÇÃO 2: MIDDLEWARE DE AUTENTICAÇÃO INTERNO
 // =================================================================
 const authMiddleware = (req, res, next) => {
+    console.log('--- [AUTH MIDDLEWARE] Verificando acesso ---');
+    console.log('Rota acessada:', req.method, req.url);
+    console.log('Sessão ID:', req.sessionID);
+    console.log('isAuthenticated:', req.session?.isAuthenticated);
+    console.log('Tem localUser:', !!req.session?.localUser);
+
     if (!req.session.isAuthenticated || !req.session.localUser) { 
+        console.log('❌ Bloqueado: Usuário não possui sessão ativa no backend (pode ter sido resetada).');
         return res.status(401).json({ error: 'Acesso não autorizado. Faça login primeiro.' });
     }
     req.user = req.session.localUser; 
@@ -354,6 +361,45 @@ pool.connect()
                     data_sugerida TIMESTAMP,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
+                
+                CREATE TABLE IF NOT EXISTS visitas (
+                    id SERIAL PRIMARY KEY,
+                    cliente_id INTEGER REFERENCES clientes(id) ON DELETE CASCADE,
+                    vendedor_id INTEGER REFERENCES funcionarios(id) ON DELETE CASCADE,
+                    data_visita DATE NOT NULL,
+                    justificativa_objetivo TEXT NOT NULL,
+                    status_autorizacao VARCHAR(50) DEFAULT 'Pendente',
+                    feedback_vendedor TEXT,
+                    gestor_id INTEGER REFERENCES funcionarios(id) ON DELETE SET NULL,
+                    data_resposta_gestor TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
+                -- 🚀 Atualizações para o sistema de Retorno e Notificações de Visitas
+                ALTER TABLE visitas ADD COLUMN IF NOT EXISTS data_retorno DATE;
+                ALTER TABLE visitas ADD COLUMN IF NOT EXISTS requer_retorno BOOLEAN DEFAULT FALSE;
+                ALTER TABLE visitas ADD COLUMN IF NOT EXISTS vendedor_viu_status BOOLEAN DEFAULT FALSE;
+                ALTER TABLE visitas ADD COLUMN IF NOT EXISTS lembrete_retorno_visto BOOLEAN DEFAULT FALSE;
+                ALTER TABLE visitas ADD COLUMN IF NOT EXISTS gestor_viu_pendencia BOOLEAN DEFAULT FALSE;
+
+                -- 🚀 TABELAS DO MÓDULO DE NOTÍCIAS
+                CREATE TABLE IF NOT EXISTS noticias (
+                    id SERIAL PRIMARY KEY,
+                    titulo VARCHAR(255) NOT NULL,
+                    resumo TEXT,
+                    conteudo TEXT NOT NULL,
+                    tipo VARCHAR(50) DEFAULT 'Informativo',
+                    fixado BOOLEAN DEFAULT FALSE,
+                    setores_alvo JSONB DEFAULT '[]', 
+                    criador_id INTEGER REFERENCES funcionarios(id) ON DELETE SET NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE IF NOT EXISTS noticias_lidas (
+                    noticia_id INTEGER REFERENCES noticias(id) ON DELETE CASCADE,
+                    usuario_id INTEGER REFERENCES funcionarios(id) ON DELETE CASCADE,
+                    lida_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (noticia_id, usuario_id)
+                );
             `);
         } catch (err) {
             console.error('❌ Erro ao criar tabelas iniciais:', err.message);
@@ -369,6 +415,324 @@ poolMannes.getConnection()
         conn.release(); 
     })
     .catch(err => console.error('❌ Erro MySQL (erp_mannes):', err.message));
+
+// =================================================================
+// SEÇÃO 9: API DE GERENCIAMENTO DE VISITAS COMERCIAIS
+// =================================================================
+
+app.post('/api/visitas', authMiddleware, async (req, res) => {
+    try {
+        const vendedor_id = req.user.id;
+        const { cliente_id, data_visita, justificativa_objetivo } = req.body;
+
+        if (!cliente_id || !data_visita || !justificativa_objetivo) {
+            return res.status(400).json({ error: 'Preencha todos os campos obrigatórios.' });
+        }
+
+        const query = `
+            INSERT INTO visitas (cliente_id, vendedor_id, data_visita, justificativa_objetivo, status_autorizacao)
+            VALUES ($1, $2, $3, $4, 'Pendente') RETURNING id
+        `;
+        const { rows } = await pool.query(query, [cliente_id, vendedor_id, data_visita, justificativa_objetivo]);
+        res.status(201).json({ message: 'Visita solicitada com sucesso!', id: rows[0].id });
+    } catch (error) {
+        console.error('Erro ao criar visita:', error);
+        res.status(500).json({ error: 'Erro ao solicitar a visita.' });
+    }
+});
+
+app.get('/api/visitas', authMiddleware, async (req, res) => {
+    try {
+        const isManager = req.user.privilegios && (req.user.privilegios.includes('Admin') || req.user.privilegios.includes('Gestor'));
+        const vendedor_id = req.user.id;
+
+        let query = `
+            SELECT v.*, c.nome_cliente, f.nome_completo as vendedor_nome, g.nome_completo as gestor_nome
+            FROM visitas v
+            JOIN clientes c ON v.cliente_id = c.id
+            JOIN funcionarios f ON v.vendedor_id = f.id
+            LEFT JOIN funcionarios g ON v.gestor_id = g.id
+        `;
+        const params = [];
+
+        if (!isManager) {
+            query += ` WHERE v.vendedor_id = $1`;
+            params.push(vendedor_id);
+        }
+
+        query += ` ORDER BY v.data_visita DESC, v.created_at DESC`;
+
+        const { rows } = await pool.query(query, params);
+        res.json(rows);
+    } catch (error) {
+        console.error('Erro ao buscar visitas:', error);
+        res.status(500).json({ error: 'Erro ao buscar as visitas.' });
+    }
+});
+
+app.patch('/api/visitas/:id/autorizar', authMiddleware, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { status_autorizacao } = req.body;
+        const gestor_id = req.user.id;
+
+        const isManager = req.user.privilegios && (req.user.privilegios.includes('Admin') || req.user.privilegios.includes('Gestor'));
+        if (!isManager) {
+            return res.status(403).json({ error: 'Acesso negado. Apenas gestores podem autorizar visitas.' });
+        }
+
+        if (!['Autorizada', 'Recusada'].includes(status_autorizacao)) {
+            return res.status(400).json({ error: 'Status inválido.' });
+        }
+
+        const query = `
+            UPDATE visitas 
+            SET status_autorizacao = $1, gestor_id = $2, data_resposta_gestor = CURRENT_TIMESTAMP
+            WHERE id = $3 RETURNING *
+        `;
+        const { rowCount } = await pool.query(query, [status_autorizacao, gestor_id, id]);
+
+        if (rowCount === 0) return res.status(404).json({ error: 'Visita não encontrada.' });
+
+        res.json({ message: `Visita ${status_autorizacao.toLowerCase()} com sucesso!` });
+    } catch (error) {
+        console.error('Erro ao autorizar visita:', error);
+        res.status(500).json({ error: 'Erro ao processar a autorização.' });
+    }
+});
+
+app.patch('/api/visitas/:id/feedback', authMiddleware, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { feedback_vendedor, requer_retorno, data_retorno } = req.body;
+        const vendedor_id = req.user.id;
+
+        const { rows: visitaRows } = await pool.query('SELECT vendedor_id, status_autorizacao FROM visitas WHERE id = $1', [id]);
+        if (visitaRows.length === 0) return res.status(404).json({ error: 'Visita não encontrada.' });
+        if (visitaRows[0].vendedor_id !== vendedor_id) return res.status(403).json({ error: 'Acesso negado.' });
+        if (visitaRows[0].status_autorizacao !== 'Autorizada') return res.status(400).json({ error: 'Apenas visitas autorizadas recebem feedback.' });
+
+        const query = `
+            UPDATE visitas 
+            SET feedback_vendedor = $1, requer_retorno = $2, data_retorno = $3
+            WHERE id = $4 RETURNING *
+        `;
+        await pool.query(query, [feedback_vendedor, requer_retorno || false, data_retorno || null, id]);
+
+        res.json({ message: 'Feedback registrado com sucesso!' });
+    } catch (error) {
+        console.error('Erro ao registrar feedback:', error);
+        res.status(500).json({ error: 'Erro ao salvar feedback.' });
+    }
+});
+
+app.get('/api/visitas/dashboard', authMiddleware, async (req, res) => {
+    try {
+        const isManager = req.user.privilegios && (req.user.privilegios.includes('Admin') || req.user.privilegios.includes('Gestor'));
+        const vendedor_id = req.user.id;
+        const { mes, ano } = req.query;
+
+        let conditions = [];
+        const params = [];
+        let paramIndex = 1;
+        
+        if (ano) {
+            conditions.push(`EXTRACT(YEAR FROM data_visita) = $${paramIndex++}`);
+            params.push(ano);
+        } else {
+            conditions.push(`EXTRACT(YEAR FROM data_visita) = EXTRACT(YEAR FROM CURRENT_DATE)`);
+        }
+
+        if (mes && mes !== 'todos') {
+            conditions.push(`EXTRACT(MONTH FROM data_visita) = $${paramIndex++}`);
+            params.push(mes);
+        } else if (!mes && !ano) {
+            conditions.push(`EXTRACT(MONTH FROM data_visita) = EXTRACT(MONTH FROM CURRENT_DATE)`);
+        }
+
+        if (!isManager) {
+            conditions.push(`vendedor_id = $${paramIndex++}`);
+            params.push(vendedor_id);
+        }
+
+        const baseCondition = conditions.length > 0 ? conditions.join(' AND ') : '1=1';
+
+        const kpisQuery = `
+            SELECT 
+                COUNT(*) as total_visitas,
+                COUNT(*) FILTER (WHERE status_autorizacao = 'Pendente') as pendentes,
+                COUNT(*) FILTER (WHERE status_autorizacao = 'Autorizada') as autorizadas,
+                COUNT(*) FILTER (WHERE status_autorizacao = 'Recusada') as recusadas
+            FROM visitas
+            WHERE ${baseCondition}
+        `;
+        const { rows: kpis } = await pool.query(kpisQuery, params);
+
+        const rankingQuery = `
+            SELECT f.nome_completo as vendedor, COUNT(v.id) as total_visitas
+            FROM visitas v
+            JOIN funcionarios f ON v.vendedor_id = f.id
+            WHERE ${baseCondition} AND v.status_autorizacao = 'Autorizada'
+            GROUP BY f.nome_completo
+            ORDER BY total_visitas DESC
+        `;
+        const { rows: ranking } = await pool.query(rankingQuery, params);
+
+        res.json({
+            kpis: kpis[0],
+            ranking
+        });
+    } catch (error) {
+        console.error('Erro ao buscar dashboard de visitas:', error);
+        res.status(500).json({ error: 'Erro ao gerar métricas do dashboard.' });
+    }
+});
+
+// =================================================================
+// NOTIFICAÇÕES (Sino do Header)
+// =================================================================
+app.get('/api/notificacoes', authMiddleware, async (req, res) => {
+    try {
+        const vendedor_id = req.user.id;
+        const isManager = req.user.privilegios && (req.user.privilegios.includes('Admin') || req.user.privilegios.includes('Gestor'));
+        
+        const { rows: statusRows } = await pool.query(`
+            SELECT v.id, v.status_autorizacao, c.nome_cliente, v.data_visita, 'status' as tipo
+            FROM visitas v JOIN clientes c ON v.cliente_id = c.id
+            WHERE v.vendedor_id = $1 AND v.status_autorizacao IN ('Autorizada', 'Recusada') AND v.vendedor_viu_status = FALSE
+        `, [vendedor_id]);
+
+        const { rows: feedbackRows } = await pool.query(`
+            SELECT v.id, c.nome_cliente, v.data_visita, 'feedback' as tipo
+            FROM visitas v JOIN clientes c ON v.cliente_id = c.id
+            WHERE v.vendedor_id = $1 AND v.status_autorizacao = 'Autorizada' AND v.data_visita <= CURRENT_DATE AND v.feedback_vendedor IS NULL
+        `, [vendedor_id]);
+
+        const { rows: retornoRows } = await pool.query(`
+            SELECT v.id, c.nome_cliente, v.data_retorno, 'retorno' as tipo
+            FROM visitas v JOIN clientes c ON v.cliente_id = c.id
+            WHERE v.vendedor_id = $1 AND v.requer_retorno = TRUE AND v.data_retorno <= CURRENT_DATE + INTERVAL '3 days' AND v.lembrete_retorno_visto = FALSE
+        `, [vendedor_id]);
+
+        let gestorRows = [];
+        if (isManager) {
+            const { rows } = await pool.query(`
+                SELECT v.id, c.nome_cliente, f.nome_completo as vendedor_nome, v.data_visita, 'aprovacao_gestor' as tipo
+                FROM visitas v 
+                JOIN clientes c ON v.cliente_id = c.id
+                JOIN funcionarios f ON v.vendedor_id = f.id
+                WHERE v.status_autorizacao = 'Pendente' AND v.gestor_viu_pendencia = FALSE
+            `);
+            gestorRows = rows;
+        }
+
+        const setor_id = req.user.setor_id;
+        const setorParam = setor_id ? [setor_id] : [];
+        const { rows: newsRows } = await pool.query(`
+            SELECT n.id, n.titulo, n.tipo, n.created_at, 'nova_noticia' as tipo
+            FROM noticias n
+            LEFT JOIN noticias_lidas nl ON n.id = nl.noticia_id AND nl.usuario_id = $1
+            WHERE nl.noticia_id IS NULL AND (n.setores_alvo = '[]'::jsonb OR n.setores_alvo @> $2::jsonb)
+        `, [vendedor_id, JSON.stringify(setorParam)]);
+
+        res.json([...statusRows, ...feedbackRows, ...retornoRows, ...gestorRows, ...newsRows]);
+    } catch (error) {
+        res.status(500).json({ error: 'Erro ao buscar notificações.' });
+    }
+});
+
+app.patch('/api/notificacoes/:id/lida', authMiddleware, async (req, res) => {
+    try {
+        const { id } = req.params;
+        if (req.body.tipo === 'status') await pool.query('UPDATE visitas SET vendedor_viu_status = TRUE WHERE id = $1', [id]);
+        if (req.body.tipo === 'retorno') await pool.query('UPDATE visitas SET lembrete_retorno_visto = TRUE WHERE id = $1', [id]);
+        if (req.body.tipo === 'aprovacao_gestor') await pool.query('UPDATE visitas SET gestor_viu_pendencia = TRUE WHERE id = $1', [id]);
+        if (req.body.tipo === 'nova_noticia') {
+            await pool.query('INSERT INTO noticias_lidas (noticia_id, usuario_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [id, req.user.id]);
+        }
+        res.json({ message: 'Lida.' });
+    } catch (error) {
+        res.status(500).json({ error: 'Erro.' });
+    }
+});
+
+// =================================================================
+// SEÇÃO: MÓDULO DE NOTÍCIAS (MURAL)
+// =================================================================
+app.get('/api/noticias', authMiddleware, async (req, res) => {
+    try {
+        const usuario_id = req.user.id;
+        const setor_id = req.user.setor_id;
+        const setorParam = setor_id ? [setor_id] : [];
+
+        const query = `
+            SELECT n.*, f.nome_completo as autor,
+                   EXISTS(SELECT 1 FROM noticias_lidas nl WHERE nl.noticia_id = n.id AND nl.usuario_id = $1) as lida
+            FROM noticias n
+            LEFT JOIN funcionarios f ON n.criador_id = f.id
+            WHERE n.setores_alvo = '[]'::jsonb OR n.setores_alvo @> $2::jsonb
+            ORDER BY n.fixado DESC, n.created_at DESC
+        `;
+        const { rows } = await pool.query(query, [usuario_id, JSON.stringify(setorParam)]);
+        res.json(rows);
+    } catch (err) {
+        console.error('Erro /api/noticias GET:', err);
+        res.status(500).json({ error: 'Erro ao buscar notícias.' });
+    }
+});
+
+app.post('/api/noticias', authMiddleware, async (req, res) => {
+    try {
+        const { titulo, resumo, conteudo, tipo, fixado, setores_alvo } = req.body;
+        const criador_id = req.user.id;
+        const setoresJson = JSON.stringify(setores_alvo || []);
+
+        const query = `
+            INSERT INTO noticias (titulo, resumo, conteudo, tipo, fixado, setores_alvo, criador_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id
+        `;
+        await pool.query(query, [titulo, resumo, conteudo, tipo, fixado, setoresJson, criador_id]);
+        res.status(201).json({ message: 'Notícia publicada com sucesso!' });
+    } catch (err) {
+        res.status(500).json({ error: 'Erro ao publicar notícia.' });
+    }
+});
+
+app.put('/api/noticias/:id', authMiddleware, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { titulo, resumo, conteudo, tipo, fixado, setores_alvo } = req.body;
+        const setoresJson = JSON.stringify(setores_alvo || []);
+
+        const query = `
+            UPDATE noticias 
+            SET titulo = $1, resumo = $2, conteudo = $3, tipo = $4, fixado = $5, setores_alvo = $6
+            WHERE id = $7
+        `;
+        await pool.query(query, [titulo, resumo, conteudo, tipo, fixado, setoresJson, id]);
+        res.json({ message: 'Notícia atualizada!' });
+    } catch (err) {
+        res.status(500).json({ error: 'Erro ao atualizar notícia.' });
+    }
+});
+
+app.delete('/api/noticias/:id', authMiddleware, async (req, res) => {
+    try {
+        await pool.query('DELETE FROM noticias WHERE id = $1', [req.params.id]);
+        res.json({ message: 'Notícia removida.' });
+    } catch (err) {
+        res.status(500).json({ error: 'Erro ao excluir notícia.' });
+    }
+});
+
+app.post('/api/noticias/:id/lida', authMiddleware, async (req, res) => {
+    try {
+        await pool.query('INSERT INTO noticias_lidas (noticia_id, usuario_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [req.params.id, req.user.id]);
+        res.json({ message: 'Notícia marcada como lida.' });
+    } catch (err) {
+        res.status(500).json({ error: 'Erro ao marcar leitura.' });
+    }
+});
 
 // =================================================================
 // SEÇÃO 3: AUTENTICAÇÃO MICROSOFT
@@ -416,7 +780,12 @@ app.get('/auth/dev', (req, res) => {
 });
 
 app.get('/user-data', async (req, res) => {
+    console.log('--- [USER-DATA] Verificando sessão na carga do App ---');
+    console.log('Sessão ID:', req.sessionID);
+    console.log('Tem accessToken:', !!req.session?.accessToken);
+
     if (!req.session.accessToken) {
+        console.log('❌ Bloqueado no /user-data: Sessão não possui accessToken.');
         return res.status(401).json({ error: 'Usuário não autenticado.' });
     }
     try {
