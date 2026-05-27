@@ -53,7 +53,9 @@ const themeStorage = multer.diskStorage({
     const prefix =
       file.fieldname === 'backgroundImageFile' ? 'background' :
       file.fieldname === 'logoFile' ? 'logo' :
-      file.fieldname === 'faviconFile' ? 'favicon' : 'asset';
+      file.fieldname === 'faviconFile' ? 'favicon' :
+      file.fieldname === 'loginBgImageFile' ? 'login-background' :
+      file.fieldname === 'loginLogoFile' ? 'login-logo' : 'asset';
     cb(null, `${prefix}-${Date.now()}${ext}`);
   }
 });
@@ -61,7 +63,9 @@ const themeStorage = multer.diskStorage({
 const themeUpload = multer({ storage: themeStorage }).fields([
     { name: 'backgroundImageFile', maxCount: 1 },
     { name: 'logoFile', maxCount: 1 },
-    { name: 'faviconFile', maxCount: 1 }
+    { name: 'faviconFile', maxCount: 1 },
+    { name: 'loginBgImageFile', maxCount: 1 },
+    { name: 'loginLogoFile', maxCount: 1 }
 ]);
 
 const authAgent = require('./authAgent'); 
@@ -200,6 +204,9 @@ pool.connect()
                 
                 -- Garante que o campo ativo exista mesmo se a tabela for legada
                 ALTER TABLE funcionarios ADD COLUMN IF NOT EXISTS ativo BOOLEAN DEFAULT TRUE;
+
+                -- Adiciona a coluna de gestor para a hierarquia do organograma
+                ALTER TABLE funcionarios ADD COLUMN IF NOT EXISTS gestor_id INTEGER REFERENCES funcionarios(id) ON DELETE SET NULL;
 
                 -- 🚀 Garante que o campo de privilégios comporte múltiplas permissões (mais de 7 caracteres)
                 ALTER TABLE funcionarios ALTER COLUMN privilegios TYPE TEXT;
@@ -848,14 +855,17 @@ app.get('/api/settings', async (req, res) => {
 });
 
 app.post('/api/settings', themeUpload, async (req, res) => {
-    const { backgroundType, backgroundColor, sidebarColor, headerColor, pageTitle, sidebarIconColor, sidebarActiveColor, darkModeBackground, darkModeSurface, darkModePrimaryText, darkModeSecondaryText, lightModeSurface } = req.body;
+    const { backgroundType, backgroundColor, sidebarColor, headerColor, pageTitle, sidebarIconColor, sidebarActiveColor, darkModeBackground, darkModeSurface, darkModePrimaryText, darkModeSecondaryText, lightModeSurface, login_bg_color, card_header_bg, card_header_text } = req.body;
 
     const settingsToUpdate = {
         sidebar_color: sidebarColor, header_color: headerColor, page_title: pageTitle,
         sidebar_icon_color: sidebarIconColor, sidebar_active_color: sidebarActiveColor,
         dark_mode_background: darkModeBackground, dark_mode_surface: darkModeSurface,
         dark_mode_primary_text: darkModePrimaryText, dark_mode_secondary_text: darkModeSecondaryText,
-        light_mode_surface: lightModeSurface
+        light_mode_surface: lightModeSurface,
+        login_bg_color: login_bg_color,
+        card_header_bg: card_header_bg,
+        card_header_text: card_header_text
     };
 
     if (req.files && req.files.backgroundImageFile) {
@@ -869,6 +879,12 @@ app.post('/api/settings', themeUpload, async (req, res) => {
     }
     if (req.files && req.files.faviconFile) {
         settingsToUpdate.favicon_url = `${BACKEND_URL}/uploads/theme/${req.files.faviconFile[0].filename}`;
+    }
+    if (req.files && req.files.loginBgImageFile) {
+        settingsToUpdate.login_bg_image = `${BACKEND_URL}/uploads/theme/${req.files.loginBgImageFile[0].filename}`;
+    }
+    if (req.files && req.files.loginLogoFile) {
+        settingsToUpdate.login_logo_url = `${BACKEND_URL}/uploads/theme/${req.files.loginLogoFile[0].filename}`;
     }
 
     const settingsToSave = Object.entries(settingsToUpdate);
@@ -925,14 +941,15 @@ app.get('/api/funcionarios', async (req, res) => {
 });
 
 app.post('/api/funcionarios', async (req, res) => {
-    const { nome_completo, email, contato, setor_id, userpic_base64, cargo_id, privilegios, fabricantes_ids } = req.body;
+    const { nome_completo, email, contato, setor_id, userpic_base64, cargo_id, privilegios, fabricantes_ids, gestor_id } = req.body;
     const finalCargoId = (!cargo_id || cargo_id === '') ? null : cargo_id;
     const finalSetorId = (!setor_id || setor_id === '') ? null : setor_id;
     const finalUserpic = (!userpic_base64 || userpic_base64 === '') ? null : userpic_base64;
+    const finalGestorId = (!gestor_id || gestor_id === '') ? null : gestor_id;
     try {
         // [PG] Inclusão de RETURNING id
-        const sql = 'INSERT INTO funcionarios (nome_completo, email, contato, setor_id, userpic_base64, cargo_id, privilegios) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id';
-        const { rows } = await pool.query(sql, [nome_completo, email, contato, finalSetorId, finalUserpic, finalCargoId, privilegios]);
+        const sql = 'INSERT INTO funcionarios (nome_completo, email, contato, setor_id, userpic_base64, cargo_id, privilegios, gestor_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id';
+        const { rows } = await pool.query(sql, [nome_completo, email, contato, finalSetorId, finalUserpic, finalCargoId, privilegios, finalGestorId]);
         const newId = rows[0].id;
         
         // 🚀 Salva os vínculos de fabricantes para este novo funcionário
@@ -952,12 +969,13 @@ app.post('/api/funcionarios', async (req, res) => {
 
 app.put('/api/funcionarios/:id', async (req, res) => {
     const { id } = req.params;
-    const { nome_completo, email, contato, setor_id, userpic_base64, cargo_id, privilegios, fabricantes_ids } = req.body;
+    const { nome_completo, email, contato, setor_id, userpic_base64, cargo_id, privilegios, fabricantes_ids, gestor_id } = req.body;
     const finalCargoId = (!cargo_id || cargo_id === '') ? null : cargo_id;
     const finalSetorId = (!setor_id || setor_id === '') ? null : setor_id;
     const finalUserpic = (!userpic_base64 || userpic_base64 === '') ? null : userpic_base64;
+    const finalGestorId = (!gestor_id || gestor_id === '') ? null : gestor_id;
     try {
-        await pool.query('UPDATE funcionarios SET nome_completo = $1, email = $2, contato = $3, setor_id = $4, userpic_base64 = $5, cargo_id = $6, privilegios = $7 WHERE id = $8', [nome_completo, email, contato, finalSetorId, finalUserpic, finalCargoId, privilegios, id]);
+        await pool.query('UPDATE funcionarios SET nome_completo = $1, email = $2, contato = $3, setor_id = $4, userpic_base64 = $5, cargo_id = $6, privilegios = $7, gestor_id = $8 WHERE id = $9', [nome_completo, email, contato, finalSetorId, finalUserpic, finalCargoId, privilegios, finalGestorId, id]);
         
         // 🚀 Atualiza os vínculos de fabricantes (apaga os antigos e insere as novas caixinhas marcadas)
         await pool.query('DELETE FROM funcionario_fabricante WHERE funcionario_id = $1', [id]);
@@ -1066,6 +1084,7 @@ app.get('/api/funcionarios-tecnicos', async (req, res) => {
                 c.nome_cargo as cargo,
                 f.userpic_base64,
                 s.nome_setor as setor,
+                f.gestor_id,
                 STRING_AGG(fab.name, ', ') as fabricantes_nomes 
             FROM funcionarios f
             LEFT JOIN setores s ON f.setor_id = s.id
@@ -1073,7 +1092,7 @@ app.get('/api/funcionarios-tecnicos', async (req, res) => {
             LEFT JOIN funcionario_fabricante ff ON f.id = ff.funcionario_id
             LEFT JOIN fabricantes fab ON ff.fabricante_id = fab.id
             WHERE s.nome_setor IN ('Departamento Técnico', 'Dtc') AND (f.ativo = TRUE OR f.ativo IS NULL)
-            GROUP BY f.id, f.nome_completo, f.email, f.contato, c.nome_cargo, f.userpic_base64, s.nome_setor
+            GROUP BY f.id, f.nome_completo, f.email, f.contato, c.nome_cargo, f.userpic_base64, s.nome_setor, f.gestor_id
             ORDER BY f.nome_completo ASC
         `;
         const { rows } = await pool.query(sql);
