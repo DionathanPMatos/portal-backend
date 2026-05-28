@@ -170,6 +170,17 @@ pool.connect()
                     id SERIAL PRIMARY KEY,
                     nome_setor VARCHAR(255) NOT NULL UNIQUE
                 );
+                
+                -- 🚀 Tabela do Repositório Técnico de Documentos
+                CREATE TABLE IF NOT EXISTS repositorio_tecnico (
+                    id SERIAL PRIMARY KEY,
+                    nome VARCHAR(255) NOT NULL,
+                    caminho_arquivo TEXT NOT NULL,
+                    categoria VARCHAR(100),
+                    tipo VARCHAR(100),
+                    descricao TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
                 CREATE TABLE IF NOT EXISTS fabricantes (
                     id SERIAL PRIMARY KEY,
                     name VARCHAR(255) NOT NULL UNIQUE
@@ -185,6 +196,16 @@ pool.connect()
                 CREATE TABLE IF NOT EXISTS integradores (
                     id SERIAL PRIMARY KEY,
                     nome VARCHAR(255) NOT NULL UNIQUE
+                );
+                
+                -- Tabela do Novo Módulo de Benefícios do RH
+                CREATE TABLE IF NOT EXISTS beneficios (
+                    id SERIAL PRIMARY KEY,
+                    nome VARCHAR(255) NOT NULL,
+                    descricao TEXT,
+                    logo_base64 TEXT,
+                    ativo BOOLEAN DEFAULT TRUE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             `);
 
@@ -914,6 +935,39 @@ app.post('/api/settings', themeUpload, async (req, res) => {
 });
 
 // =================================================================
+// SEÇÃO MÓDULO DE BENEFÍCIOS (RH)
+// =================================================================
+app.get('/api/beneficios', async (req, res) => {
+    try {
+        const { rows } = await pool.query('SELECT * FROM beneficios WHERE ativo = TRUE ORDER BY nome ASC');
+        res.json(rows);
+    } catch (err) { res.status(500).json({ error: 'Erro no servidor.' }); }
+});
+
+app.post('/api/beneficios', authMiddleware, async (req, res) => {
+    const { nome, descricao, logo_base64 } = req.body;
+    try {
+        const { rows } = await pool.query('INSERT INTO beneficios (nome, descricao, logo_base64) VALUES ($1, $2, $3) RETURNING id', [nome, descricao, logo_base64]);
+        res.status(201).json({ id: rows[0].id, nome, descricao, logo_base64 });
+    } catch (err) { res.status(500).json({ error: 'Erro ao criar benefício.' }); }
+});
+
+app.put('/api/beneficios/:id', authMiddleware, async (req, res) => {
+    const { nome, descricao, logo_base64 } = req.body;
+    try {
+        await pool.query('UPDATE beneficios SET nome = $1, descricao = $2, logo_base64 = $3 WHERE id = $4', [nome, descricao, logo_base64, req.params.id]);
+        res.status(200).json({ message: 'Benefício atualizado com sucesso.' });
+    } catch (err) { res.status(500).json({ error: 'Erro ao atualizar benefício.' }); }
+});
+
+app.delete('/api/beneficios/:id', authMiddleware, async (req, res) => {
+    try {
+        await pool.query('UPDATE beneficios SET ativo = FALSE WHERE id = $1', [req.params.id]);
+        res.status(200).json({ message: 'Benefício inativado com sucesso.' });
+    } catch (err) { res.status(500).json({ error: 'Erro ao inativar benefício.' }); }
+});
+
+// =================================================================
 // SEÇÃO 5: API DE GESTÃO INTERNA (FUNCIONÁRIOS, CARGOS, SETORES, FABRICANTES)
 // =================================================================
 app.get('/api/funcionarios', async (req, res) => {
@@ -1192,6 +1246,38 @@ app.get('/api/fabricantes', async (req, res) => {
         const { rows } = await pool.query('SELECT * FROM fabricantes ORDER BY name ASC');
         res.json(rows);
     } catch (err) { res.status(500).json({ error: 'Erro no servidor.' }); }
+});
+
+// =================================================================
+// SEÇÃO: REPOSITÓRIO TÉCNICO DE DOCUMENTOS
+// =================================================================
+app.get('/api/repositorio', authMiddleware, async (req, res) => {
+    try {
+        const { rows } = await pool.query('SELECT * FROM repositorio_tecnico ORDER BY created_at DESC');
+        res.json(rows);
+    } catch (err) { res.status(500).json({ error: 'Erro ao buscar documentos.' }); }
+});
+
+app.post('/api/repositorio', authMiddleware, upload.single('file'), async (req, res) => {
+    try {
+        const { nome, categoria, tipo, descricao } = req.body;
+        const caminho_arquivo = req.file ? req.file.path.replace(/\\/g, '/') : null;
+        
+        if (!caminho_arquivo) return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
+
+        const { rows } = await pool.query(
+            'INSERT INTO repositorio_tecnico (nome, caminho_arquivo, categoria, tipo, descricao) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+            [nome, caminho_arquivo, categoria, tipo, descricao]
+        );
+        res.status(201).json(rows[0]);
+    } catch (err) { res.status(500).json({ error: 'Erro ao salvar documento.' }); }
+});
+
+app.delete('/api/repositorio/:id', authMiddleware, async (req, res) => {
+    try {
+        await pool.query('DELETE FROM repositorio_tecnico WHERE id = $1', [req.params.id]);
+        res.json({ message: 'Documento excluído com sucesso.' });
+    } catch (err) { res.status(500).json({ error: 'Erro ao excluir documento.' }); }
 });
 
 // =================================================================
