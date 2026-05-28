@@ -2087,6 +2087,7 @@ app.post('/api/upload-csv', upload.single('file'), async (req, res) => {
                 valorTotal: parseFloat(rawValor) || 0,
                 dadosAdicionais: linhaCompletaObjeto // 👈 O JSON com todas as colunas extras entra aqui
             });
+            
         }
 
         // 🚀 Salva tudo no banco de uma vez só
