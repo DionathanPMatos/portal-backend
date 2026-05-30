@@ -6,7 +6,6 @@ const msal = require('@azure/msal-node'); // Para autenticação Microsoft
 const axios = require('axios'); // Para fazer requisições HTTP (ex: Microsoft Graph API)
 const path = require('path'); // Para lidar com caminhos de arquivos
 const cors = require('cors'); // Para permitir requisições do frontend
-const mysql = require('mysql2/promise'); // [MANTIDO] Para o ERP externo (Mannes)
 const { Pool } = require('pg');          // [PG] Usamos o Pool do 'pg' para o banco principal
 const multer = require('multer'); // Para lidar com upload de arquivos
 const XLSX = require("xlsx"); // Para lidar com arquivos Excel
@@ -101,16 +100,6 @@ const pool = new Pool({
     max: 10 
 });
 
-// [MYSQL] Conexão Antiga: MySQL para o ERP Mannes (Mantida intacta)
-const poolMannes = mysql.createPool({ 
-    host: process.env.MYSQL_HOST || 'localhost', 
-    user: process.env.MYSQL_USER || 'root', 
-    password: process.env.MYSQL_PASSWORD, // Alterado aqui
-    database: process.env.MYSQL_DATABASE || 'erp_mannes', 
-    connectionLimit: 10, 
-    queueLimit: 0 
-});
-
 // Testes de conexão
 pool.connect()
     .then(async client => { 
@@ -181,10 +170,33 @@ pool.connect()
                     descricao TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
+                
+                -- 🚀 Tabela de Ferramentas Úteis (Links)
+                CREATE TABLE IF NOT EXISTS ferramentas_uteis (
+                    id SERIAL PRIMARY KEY,
+                    nome VARCHAR(255) NOT NULL,
+                    solucao VARCHAR(100) NOT NULL,
+                    fabricante_id INTEGER REFERENCES fabricantes(id) ON DELETE SET NULL,
+                    link TEXT NOT NULL,
+                    usuario_id INTEGER REFERENCES funcionarios(id) ON DELETE SET NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
                 CREATE TABLE IF NOT EXISTS fabricantes (
                     id SERIAL PRIMARY KEY,
                     name VARCHAR(255) NOT NULL UNIQUE
                 );
+                
+                ALTER TABLE fabricantes ADD COLUMN IF NOT EXISTS logo_base64 TEXT;
+                ALTER TABLE fabricantes ADD COLUMN IF NOT EXISTS resumo TEXT;
+                ALTER TABLE fabricantes ADD COLUMN IF NOT EXISTS key_accounts TEXT;
+                ALTER TABLE fabricantes ADD COLUMN IF NOT EXISTS registros_projetos TEXT;
+                ALTER TABLE fabricantes ADD COLUMN IF NOT EXISTS garantias TEXT;
+                ALTER TABLE fabricantes ADD COLUMN IF NOT EXISTS prazos_compras TEXT;
+                ALTER TABLE fabricantes ADD COLUMN IF NOT EXISTS certificacoes_treinamentos TEXT;
+                ALTER TABLE fabricantes ADD COLUMN IF NOT EXISTS contatos_suporte TEXT;
+                ALTER TABLE fabricantes ADD COLUMN IF NOT EXISTS links_uteis TEXT;
+                
                 CREATE TABLE IF NOT EXISTS segmentacoes (
                     id SERIAL PRIMARY KEY,
                     nome VARCHAR(255) NOT NULL UNIQUE
@@ -437,13 +449,6 @@ pool.connect()
     })
     .catch(err => console.error('❌ Erro PostgreSQL (portal_dca):', err.message));
 
-poolMannes.getConnection()
-    .then(conn => { 
-        console.log('✅ Conectado ao MySQL (erp_mannes)'); 
-        conn.release(); 
-    })
-    .catch(err => console.error('❌ Erro MySQL (erp_mannes):', err.message));
-
 // =================================================================
 // SEÇÃO 9: API DE GERENCIAMENTO DE VISITAS COMERCIAIS
 // =================================================================
@@ -469,6 +474,51 @@ app.post('/api/visitas', authMiddleware, async (req, res) => {
     }
 });
 
+app.get('/api/fabricantes/:id', async (req, res) => {
+    try {
+        const { rows } = await pool.query('SELECT * FROM fabricantes WHERE id = $1', [req.params.id]);
+        if (rows.length === 0) return res.status(404).json({ error: 'Fabricante não encontrado' });
+        res.json(rows[0]);
+    } catch (err) { res.status(500).json({ error: 'Erro no servidor.' }); }
+});
+
+app.post('/api/fabricantes', authMiddleware, async (req, res) => {
+    try {
+        const { name, logo_base64, resumo, key_accounts, registros_projetos, garantias, prazos_compras, certificacoes_treinamentos, contatos_suporte, links_uteis } = req.body;
+        const { rows } = await pool.query(
+            'INSERT INTO fabricantes (name, logo_base64, resumo, key_accounts, registros_projetos, garantias, prazos_compras, certificacoes_treinamentos, contatos_suporte, links_uteis) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id',
+            [name, logo_base64, resumo, key_accounts, registros_projetos, garantias, prazos_compras, certificacoes_treinamentos, contatos_suporte, links_uteis]
+        );
+        res.status(201).json({ id: rows[0].id, name });
+    } catch (err) {
+        if (err.code === '23505') return res.status(409).json({ error: 'Fabricante já existe.' });
+        res.status(500).json({ error: 'Erro no servidor.' });
+    }
+});
+
+app.put('/api/fabricantes/:id', authMiddleware, async (req, res) => {
+    try {
+        const { name, logo_base64, resumo, key_accounts, registros_projetos, garantias, prazos_compras, certificacoes_treinamentos, contatos_suporte, links_uteis } = req.body;
+        const { rowCount } = await pool.query(
+            'UPDATE fabricantes SET name = $1, logo_base64 = $2, resumo = $3, key_accounts = $4, registros_projetos = $5, garantias = $6, prazos_compras = $7, certificacoes_treinamentos = $8, contatos_suporte = $9, links_uteis = $10 WHERE id = $11',
+            [name, logo_base64, resumo, key_accounts, registros_projetos, garantias, prazos_compras, certificacoes_treinamentos, contatos_suporte, links_uteis, req.params.id]
+        );
+        if (rowCount === 0) return res.status(404).json({ error: 'Fabricante não encontrado.' });
+        res.json({ message: 'Fabricante atualizado com sucesso.' });
+    } catch (err) {
+        if (err.code === '23505') return res.status(409).json({ error: 'Nome de fabricante já em uso.' });
+        res.status(500).json({ error: 'Erro no servidor.' });
+    }
+});
+
+app.delete('/api/fabricantes/:id', authMiddleware, async (req, res) => {
+    try {
+        await pool.query('DELETE FROM fabricantes WHERE id = $1', [req.params.id]);
+        res.json({ message: 'Fabricante removido.' });
+    } catch (err) {
+        res.status(500).json({ error: 'Erro ao remover fabricante. Pode estar em uso.' });
+    }
+});
 app.get('/api/visitas', authMiddleware, async (req, res) => {
     try {
         const isManager = req.user.privilegios && (req.user.privilegios.includes('Admin') || req.user.privilegios.includes('Gestor'));
@@ -847,6 +897,25 @@ app.get('/user-data', async (req, res) => {
 
         res.json(userProfile);
 
+            // 6. Tabelas Migradas do ERP Mannes
+            await client.query(`
+                CREATE TABLE IF NOT EXISTS pedidos_cabecalho (
+                    id SERIAL PRIMARY KEY,
+                    numero_pedido VARCHAR(100) UNIQUE NOT NULL,
+                    cliente_nome VARCHAR(255),
+                    data_emissao DATE,
+                    valor_total NUMERIC(15, 2),
+                    status VARCHAR(100)
+                );
+                
+                CREATE TABLE IF NOT EXISTS pedidos_itens (
+                    id SERIAL PRIMARY KEY,
+                    pedido_id INTEGER REFERENCES pedidos_cabecalho(id) ON DELETE CASCADE,
+                    produto VARCHAR(255),
+                    quantidade INTEGER,
+                    preco_unitario NUMERIC(15, 2)
+                );
+            `);
     } catch (error) { 
         console.error("Erro ao buscar dados do usuário:", error.message);
         res.status(500).json({ error: 'Erro ao carregar os dados. Token pode ter expirado.' }); 
@@ -1281,6 +1350,40 @@ app.delete('/api/repositorio/:id', authMiddleware, async (req, res) => {
 });
 
 // =================================================================
+// SEÇÃO: FERRAMENTAS ÚTEIS (LINKS EXTERNOS)
+// =================================================================
+app.get('/api/ferramentas', authMiddleware, async (req, res) => {
+    try {
+        const query = `
+            SELECT fu.*, f.name as fabricante_nome, func.nome_completo as usuario_nome
+            FROM ferramentas_uteis fu
+            LEFT JOIN fabricantes f ON fu.fabricante_id = f.id
+            LEFT JOIN funcionarios func ON fu.usuario_id = func.id
+            ORDER BY fu.created_at DESC
+        `;
+        const { rows } = await pool.query(query);
+        res.json(rows);
+    } catch (err) { res.status(500).json({ error: 'Erro ao buscar ferramentas.' }); }
+});
+
+app.post('/api/ferramentas', authMiddleware, async (req, res) => {
+    try {
+        const { nome, solucao, fabricante_id, link } = req.body;
+        const usuario_id = req.user.id;
+        const query = `INSERT INTO ferramentas_uteis (nome, solucao, fabricante_id, link, usuario_id) VALUES ($1, $2, $3, $4, $5) RETURNING *`;
+        const { rows } = await pool.query(query, [nome, solucao, fabricante_id || null, link, usuario_id]);
+        res.status(201).json(rows[0]);
+    } catch (err) { res.status(500).json({ error: 'Erro ao salvar ferramenta.' }); }
+});
+
+app.delete('/api/ferramentas/:id', authMiddleware, async (req, res) => {
+    try {
+        await pool.query('DELETE FROM ferramentas_uteis WHERE id = $1', [req.params.id]);
+        res.json({ message: 'Ferramenta excluída.' });
+    } catch (err) { res.status(500).json({ error: 'Erro ao excluir ferramenta.' }); }
+});
+
+// =================================================================
 // SEÇÃO 6: API DO CRM (PROJETOS, CLIENTES, VENDEDORES)
 // =================================================================
 app.get('/api/projetos', async (req, res) => {
@@ -1338,7 +1441,19 @@ app.post('/api/projetos', async (req, res) => {
                 etapa_funil, tipo_projeto, segmentacao_id, vertical_id, integrador_id, numero_registro_fabricante
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id;
         `;
-        const valores = [nome_projeto, cliente_id, vendedor_id, valor_estimado || null, data_fechamento_prevista || null, etapa_funil, tipo_projeto, segmentacao_id || null, vertical_id || null, integrador_id || null, numero_registro_fabricante || null];
+        const valores = [
+            nome_projeto, 
+            cliente_id || null, 
+            vendedor_id || null, 
+            valor_estimado || null, 
+            data_fechamento_prevista || null, 
+            etapa_funil || 'Prospeccao', 
+            tipo_projeto || null, 
+            segmentacao_id || null, 
+            vertical_id || null, 
+            integrador_id || null, 
+            numero_registro_fabricante || null
+        ];
         
         const { rows } = await client.query(projetoQuery, valores);
         const projetoId = rows[0].id;
@@ -1359,6 +1474,7 @@ app.post('/api/projetos', async (req, res) => {
         res.status(201).json({ message: 'Projeto criado com sucesso!', id: projetoId });
     } catch (err) {
         if (client) await client.query('ROLLBACK');
+        console.error("Erro no POST /api/projetos:", err);
         res.status(500).json({ error: 'Falha ao criar o projeto.', details: err.message });
     } finally {
         if (client) client.release();
@@ -1366,11 +1482,60 @@ app.post('/api/projetos', async (req, res) => {
 });
 
 app.put('/api/projetos/:id', async (req, res) => {
+    let client;
     try {
-        const { nome_projeto, cliente_id, valor_estimado, data_fechamento_prevista, vendedor_id, etapa_funil } = req.body;
-        await pool.query(`UPDATE projetos SET nome_projeto = $1, cliente_id = $2, valor_estimado = $3, data_fechamento_prevista = $4, vendedor_id = $5, etapa_funil = $6 WHERE id = $7`, [nome_projeto, cliente_id, valor_estimado, data_fechamento_prevista, vendedor_id, etapa_funil, req.params.id]);
+        const { nome_projeto, cliente_id, valor_estimado, data_fechamento_prevista, vendedor_id, etapa_funil, tipo_projeto, segmentacao_id, vertical_id, integrador_id, numero_registro_fabricante, colaboradores_ids, fabricantes_ids } = req.body;
+        
+        client = await pool.connect();
+        await client.query('BEGIN');
+
+        const query = `
+            UPDATE projetos 
+            SET nome_projeto = $1, cliente_id = $2, valor_estimado = $3, data_fechamento_prevista = $4, 
+                vendedor_id = $5, etapa_funil = $6, tipo_projeto = $7, segmentacao_id = $8, 
+                vertical_id = $9, integrador_id = $10, numero_registro_fabricante = $11, updated_at = CURRENT_TIMESTAMP
+            WHERE id = $12
+        `;
+        const valores = [
+            nome_projeto, 
+            cliente_id || null, 
+            valor_estimado || null, 
+            data_fechamento_prevista || null, 
+            vendedor_id || null, 
+            etapa_funil, 
+            tipo_projeto || null, 
+            segmentacao_id || null, 
+            vertical_id || null, 
+            integrador_id || null, 
+            numero_registro_fabricante || null, 
+            req.params.id
+        ];
+        
+        await client.query(query, valores);
+
+        await client.query('DELETE FROM projetos_fabricantes WHERE projeto_id = $1', [req.params.id]);
+        if (fabricantes_ids && fabricantes_ids.length > 0) {
+            for(let id of fabricantes_ids) {
+                await client.query('INSERT INTO projetos_fabricantes (projeto_id, fabricante_id) VALUES ($1, $2)', [req.params.id, id]);
+            }
+        }
+
+        await client.query('DELETE FROM projetos_colaboradores WHERE projeto_id = $1', [req.params.id]);
+        if (colaboradores_ids && colaboradores_ids.length > 0) {
+            for(let id of colaboradores_ids) {
+                await client.query('INSERT INTO projetos_colaboradores (projeto_id, funcionario_id) VALUES ($1, $2)', [req.params.id, id]);
+            }
+        }
+
+        await client.query('COMMIT');
         res.status(200).json({ message: 'Projeto atualizado com sucesso!' });
-    } catch (err) { res.status(500).json({ error: 'Erro ao atualizar projeto.' }); }
+    } catch (err) { 
+        if (client) await client.query('ROLLBACK');
+        console.error("Erro no PUT /api/projetos/:id:", err);
+        res.status(500).json({ error: 'Erro ao atualizar projeto.', details: err.message }); 
+    } finally {
+        if (client) client.release();
+    }
 });
 
 app.patch('/api/projetos/:id/mover', async (req, res) => {
@@ -1426,6 +1591,49 @@ app.patch('/api/projetos/:id/revisar', async (req, res) => {
 app.get('/api/vendedores', async (req, res) => {
     const { rows } = await pool.query(`SELECT f.id, f.nome_completo FROM funcionarios f JOIN setores s ON f.setor_id = s.id WHERE s.nome_setor = 'Comercial' AND (f.ativo = TRUE OR f.ativo IS NULL) ORDER BY f.nome_completo ASC`);
     res.json(rows);
+});
+
+app.get('/api/segmentacoes', async (req, res) => {
+    try {
+        const { rows } = await pool.query('SELECT * FROM segmentacoes ORDER BY nome ASC');
+        res.json(rows);
+    } catch (err) { res.status(500).json({ error: 'Erro no servidor.' }); }
+});
+
+app.post('/api/segmentacoes', async (req, res) => {
+    try {
+        const { nome } = req.body;
+        const { rows } = await pool.query('INSERT INTO segmentacoes (nome) VALUES ($1) RETURNING *', [nome]);
+        res.status(201).json(rows[0]);
+    } catch (err) { 
+        if (err.code === '23505') return res.status(409).json({ error: 'Segmentação já existe.' });
+        res.status(500).json({ error: 'Erro no servidor.' }); 
+    }
+});
+
+app.get('/api/verticais', async (req, res) => {
+    try {
+        const { rows } = await pool.query('SELECT * FROM verticais ORDER BY nome ASC');
+        res.json(rows);
+    } catch (err) { res.status(500).json({ error: 'Erro no servidor.' }); }
+});
+
+app.post('/api/verticais', async (req, res) => {
+    try {
+        const { nome } = req.body;
+        const { rows } = await pool.query('INSERT INTO verticais (nome) VALUES ($1) RETURNING *', [nome]);
+        res.status(201).json(rows[0]);
+    } catch (err) { 
+        if (err.code === '23505') return res.status(409).json({ error: 'Vertical já existe.' });
+        res.status(500).json({ error: 'Erro no servidor.' }); 
+    }
+});
+
+app.get('/api/integradores', async (req, res) => {
+    try {
+        const { rows } = await pool.query('SELECT * FROM integradores ORDER BY nome ASC');
+        res.json(rows);
+    } catch (err) { res.status(500).json({ error: 'Erro no servidor.' }); }
 });
 
 // IMPORTAÇÃO DE CLIENTES
@@ -1693,20 +1901,19 @@ app.post('/api/crm/projetos/importar', authMiddleware, upload.single('file'), as
 });
 
 // =================================================================
-// SEÇÃO 8: API DE INTEGRAÇÃO CRM E COMPRAS (ERP MANNES FICA NO MYSQL)
+// SEÇÃO 8: API DE INTEGRAÇÃO CRM E COMPRAS (MIGRADO PARA POSTGRESQL)
 // =================================================================
-// [MYSQL] MANTÉM desestruturação [rows] e binding param '?' - Não deve usar PG.
 app.get('/api/erp/pedido/:numero', async (req, res) => { 
     try {
-        const [cabecalhoRows] = await poolMannes.query('SELECT * FROM pedidos_cabecalho WHERE numero_pedido = ?', [req.params.numero]);
+        const { rows: cabecalhoRows } = await pool.query('SELECT * FROM pedidos_cabecalho WHERE numero_pedido = $1', [req.params.numero]);
         if (cabecalhoRows.length === 0) return res.status(404).json({ error: 'Pedido não encontrado.' });
-        const [itensRows] = await poolMannes.query('SELECT * FROM pedidos_itens WHERE pedido_id = ?', [cabecalhoRows[0].id]);
+        const { rows: itensRows } = await pool.query('SELECT * FROM pedidos_itens WHERE pedido_id = $1', [cabecalhoRows[0].id]);
         res.json({ ...cabecalhoRows[0], itens: itensRows });
     } catch (err) { res.status(500).json({ error: 'Erro no servidor.' }); }
 });
 
 app.post('/api/erp/verificar-estoque', async (req, res) => {
-    // [MYSQL] lógica intacta `poolMannes.query` e `[estoqueRows]`
+    // Lógica migrada para PostgreSQL (usar pool.query no futuro)
 });
 
 // A partir daqui volta pra o `pool` do PostgreSQL (Portal DCA)
