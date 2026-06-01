@@ -160,6 +160,12 @@ pool.connect()
                     nome_setor VARCHAR(255) NOT NULL UNIQUE
                 );
                 
+                -- Tabela de Unidades/Filiais
+                CREATE TABLE IF NOT EXISTS unidades_filiais (
+                    id SERIAL PRIMARY KEY,
+                    nome_unidade VARCHAR(255) NOT NULL UNIQUE
+                );
+                
                 -- 🚀 Tabela do Repositório Técnico de Documentos
                 CREATE TABLE IF NOT EXISTS repositorio_tecnico (
                     id SERIAL PRIMARY KEY,
@@ -240,6 +246,9 @@ pool.connect()
 
                 -- Adiciona a coluna de gestor para a hierarquia do organograma
                 ALTER TABLE funcionarios ADD COLUMN IF NOT EXISTS gestor_id INTEGER REFERENCES funcionarios(id) ON DELETE SET NULL;
+                
+                -- Adiciona vínculo com a unidade/filial
+                ALTER TABLE funcionarios ADD COLUMN IF NOT EXISTS unidade_id INTEGER REFERENCES unidades_filiais(id) ON DELETE SET NULL;
 
                 -- 🚀 Garante que o campo de privilégios comporte múltiplas permissões (mais de 7 caracteres)
                 ALTER TABLE funcionarios ALTER COLUMN privilegios TYPE TEXT;
@@ -276,6 +285,18 @@ pool.connect()
                     deleted_at TIMESTAMP
                 );
 
+                ALTER TABLE clientes ADD COLUMN IF NOT EXISTS vendedor_responsavel_id INTEGER REFERENCES funcionarios(id) ON DELETE SET NULL;
+                ALTER TABLE clientes ADD COLUMN IF NOT EXISTS tier_estrategico VARCHAR(50);
+                ALTER TABLE clientes ADD COLUMN IF NOT EXISTS status_credito VARCHAR(50);
+
+                CREATE INDEX IF NOT EXISTS idx_clientes_busca ON clientes (nome_cliente, cnpj_cpf);
+                
+                CREATE EXTENSION IF NOT EXISTS pg_trgm;
+                CREATE INDEX IF NOT EXISTS idx_clientes_nome_trgm ON clientes USING GIN (nome_cliente gin_trgm_ops);
+                CREATE INDEX IF NOT EXISTS idx_clientes_cnpj_trgm ON clientes USING GIN (cnpj_cpf gin_trgm_ops);
+                CREATE INDEX IF NOT EXISTS idx_clientes_razao_trgm ON clientes USING GIN (razao_social gin_trgm_ops);
+                CREATE INDEX IF NOT EXISTS idx_clientes_fantasia_trgm ON clientes USING GIN (nome_fantasia gin_trgm_ops);
+
                 CREATE TABLE IF NOT EXISTS cliente_contatos (
                     id SERIAL PRIMARY KEY,
                     cliente_id INTEGER REFERENCES clientes(id) ON DELETE CASCADE,
@@ -285,6 +306,10 @@ pool.connect()
                     principal BOOLEAN DEFAULT FALSE,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
+
+                ALTER TABLE cliente_contatos ADD COLUMN IF NOT EXISTS cargo VARCHAR(100);
+                ALTER TABLE cliente_contatos ADD COLUMN IF NOT EXISTS whatsapp VARCHAR(50);
+                ALTER TABLE cliente_contatos ADD COLUMN IF NOT EXISTS observacoes TEXT;
 
                 CREATE TABLE IF NOT EXISTS cliente_filiais (
                     id SERIAL PRIMARY KEY,
@@ -439,6 +464,64 @@ pool.connect()
                     usuario_id INTEGER REFERENCES funcionarios(id) ON DELETE CASCADE,
                     lida_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (noticia_id, usuario_id)
+                );
+            `);
+
+            // 7. Módulo de Gestão de Frota e Reservas
+            await client.query(`
+                CREATE TABLE IF NOT EXISTS frota_veiculos (
+                    id SERIAL PRIMARY KEY,
+                    marca VARCHAR(100) NOT NULL,
+                    modelo VARCHAR(100) NOT NULL,
+                    ano INTEGER,
+                    placa VARCHAR(20) UNIQUE NOT NULL,
+                    renavam VARCHAR(50),
+                    cor VARCHAR(50),
+                    documento_url TEXT,
+                    unidade_origem VARCHAR(100),
+                    tipo_combustivel VARCHAR(50),
+                    quilometragem_atual INTEGER DEFAULT 0,
+                    capacidade_tanque INTEGER,
+                    lotacao_maxima INTEGER,
+                    categoria VARCHAR(50),
+                    status VARCHAR(50) DEFAULT 'Disponível',
+                    data_aquisicao DATE,
+                    valor_bem NUMERIC(15, 2),
+                    apolice_seguro VARCHAR(255),
+                    centro_custo VARCHAR(100),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
+                ALTER TABLE funcionarios ADD COLUMN IF NOT EXISTS cnh_numero VARCHAR(50);
+                ALTER TABLE funcionarios ADD COLUMN IF NOT EXISTS cnh_validade DATE;
+                ALTER TABLE funcionarios ADD COLUMN IF NOT EXISTS centro_custo VARCHAR(100);
+                
+                ALTER TABLE frota_veiculos ADD COLUMN IF NOT EXISTS unidade_id INTEGER REFERENCES unidades_filiais(id) ON DELETE SET NULL;
+
+                CREATE TABLE IF NOT EXISTS frota_reservas (
+                    id SERIAL PRIMARY KEY,
+                    veiculo_id INTEGER REFERENCES frota_veiculos(id) ON DELETE CASCADE,
+                    usuario_id INTEGER REFERENCES funcionarios(id) ON DELETE CASCADE,
+                    data_inicio TIMESTAMP NOT NULL,
+                    data_fim TIMESTAMP NOT NULL,
+                    origem VARCHAR(255) NOT NULL,
+                    destino VARCHAR(255) NOT NULL,
+                    motivo TEXT,
+                    status VARCHAR(50) DEFAULT 'Aguardando Aprovação',
+                    gestor_aprovador_id INTEGER REFERENCES funcionarios(id) ON DELETE SET NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS frota_inspecoes (
+                    id SERIAL PRIMARY KEY,
+                    reserva_id INTEGER REFERENCES frota_reservas(id) ON DELETE CASCADE,
+                    tipo VARCHAR(50) NOT NULL,
+                    quilometragem INTEGER NOT NULL,
+                    nivel_combustivel VARCHAR(50),
+                    avarias TEXT,
+                    fotos JSONB DEFAULT '[]',
+                    data_inspecao TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             `);
         } catch (err) {
@@ -896,26 +979,6 @@ app.get('/user-data', async (req, res) => {
         req.session.localUser = userProfile;
 
         res.json(userProfile);
-
-            // 6. Tabelas Migradas do ERP Mannes
-            await client.query(`
-                CREATE TABLE IF NOT EXISTS pedidos_cabecalho (
-                    id SERIAL PRIMARY KEY,
-                    numero_pedido VARCHAR(100) UNIQUE NOT NULL,
-                    cliente_nome VARCHAR(255),
-                    data_emissao DATE,
-                    valor_total NUMERIC(15, 2),
-                    status VARCHAR(100)
-                );
-                
-                CREATE TABLE IF NOT EXISTS pedidos_itens (
-                    id SERIAL PRIMARY KEY,
-                    pedido_id INTEGER REFERENCES pedidos_cabecalho(id) ON DELETE CASCADE,
-                    produto VARCHAR(255),
-                    quantidade INTEGER,
-                    preco_unitario NUMERIC(15, 2)
-                );
-            `);
     } catch (error) { 
         console.error("Erro ao buscar dados do usuário:", error.message);
         res.status(500).json({ error: 'Erro ao carregar os dados. Token pode ter expirado.' }); 
@@ -1043,11 +1106,12 @@ app.get('/api/funcionarios', async (req, res) => {
     try {
         const { cargoId, setorId } = req.query;
         let sql = `
-            SELECT f.*, c.nome_cargo, s.nome_setor,
+            SELECT f.*, c.nome_cargo, s.nome_setor, u.nome_unidade,
             (SELECT COALESCE(json_agg(ff.fabricante_id), '[]'::json) FROM funcionario_fabricante ff WHERE ff.funcionario_id = f.id) as fabricantes_ids
             FROM funcionarios f 
             LEFT JOIN cargos c ON f.cargo_id = c.id 
             LEFT JOIN setores s ON f.setor_id = s.id
+            LEFT JOIN unidades_filiais u ON f.unidade_id = u.id
         `;
         const conditions = ['(f.ativo = TRUE OR f.ativo IS NULL)']; // 🚀 Oculta inativos
         const params = [];
@@ -1064,15 +1128,16 @@ app.get('/api/funcionarios', async (req, res) => {
 });
 
 app.post('/api/funcionarios', async (req, res) => {
-    const { nome_completo, email, contato, setor_id, userpic_base64, cargo_id, privilegios, fabricantes_ids, gestor_id } = req.body;
+    const { nome_completo, email, contato, setor_id, userpic_base64, cargo_id, privilegios, fabricantes_ids, gestor_id, cnh_numero, cnh_validade, unidade_id } = req.body;
     const finalCargoId = (!cargo_id || cargo_id === '') ? null : cargo_id;
     const finalSetorId = (!setor_id || setor_id === '') ? null : setor_id;
     const finalUserpic = (!userpic_base64 || userpic_base64 === '') ? null : userpic_base64;
     const finalGestorId = (!gestor_id || gestor_id === '') ? null : gestor_id;
+    const finalUnidadeId = (!unidade_id || unidade_id === '') ? null : unidade_id;
     try {
         // [PG] Inclusão de RETURNING id
-        const sql = 'INSERT INTO funcionarios (nome_completo, email, contato, setor_id, userpic_base64, cargo_id, privilegios, gestor_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id';
-        const { rows } = await pool.query(sql, [nome_completo, email, contato, finalSetorId, finalUserpic, finalCargoId, privilegios, finalGestorId]);
+        const sql = 'INSERT INTO funcionarios (nome_completo, email, contato, setor_id, userpic_base64, cargo_id, privilegios, gestor_id, cnh_numero, cnh_validade, unidade_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id';
+        const { rows } = await pool.query(sql, [nome_completo, email, contato, finalSetorId, finalUserpic, finalCargoId, privilegios, finalGestorId, cnh_numero || null, cnh_validade || null, finalUnidadeId]);
         const newId = rows[0].id;
         
         // 🚀 Salva os vínculos de fabricantes para este novo funcionário
@@ -1092,13 +1157,14 @@ app.post('/api/funcionarios', async (req, res) => {
 
 app.put('/api/funcionarios/:id', async (req, res) => {
     const { id } = req.params;
-    const { nome_completo, email, contato, setor_id, userpic_base64, cargo_id, privilegios, fabricantes_ids, gestor_id } = req.body;
+    const { nome_completo, email, contato, setor_id, userpic_base64, cargo_id, privilegios, fabricantes_ids, gestor_id, cnh_numero, cnh_validade, unidade_id } = req.body;
     const finalCargoId = (!cargo_id || cargo_id === '') ? null : cargo_id;
     const finalSetorId = (!setor_id || setor_id === '') ? null : setor_id;
     const finalUserpic = (!userpic_base64 || userpic_base64 === '') ? null : userpic_base64;
     const finalGestorId = (!gestor_id || gestor_id === '') ? null : gestor_id;
+    const finalUnidadeId = (!unidade_id || unidade_id === '') ? null : unidade_id;
     try {
-        await pool.query('UPDATE funcionarios SET nome_completo = $1, email = $2, contato = $3, setor_id = $4, userpic_base64 = $5, cargo_id = $6, privilegios = $7, gestor_id = $8 WHERE id = $9', [nome_completo, email, contato, finalSetorId, finalUserpic, finalCargoId, privilegios, finalGestorId, id]);
+        await pool.query('UPDATE funcionarios SET nome_completo = $1, email = $2, contato = $3, setor_id = $4, userpic_base64 = $5, cargo_id = $6, privilegios = $7, gestor_id = $8, cnh_numero = $9, cnh_validade = $10, unidade_id = $11 WHERE id = $12', [nome_completo, email, contato, finalSetorId, finalUserpic, finalCargoId, privilegios, finalGestorId, cnh_numero || null, cnh_validade || null, finalUnidadeId, id]);
         
         // 🚀 Atualiza os vínculos de fabricantes (apaga os antigos e insere as novas caixinhas marcadas)
         await pool.query('DELETE FROM funcionario_fabricante WHERE funcionario_id = $1', [id]);
@@ -1305,6 +1371,173 @@ app.put('/api/setores/:id', async (req, res) => {
         if (err.code === '23505') return res.status(409).json({ error: 'Já existe um setor com este nome.' });
         res.status(500).json({ error: 'Erro no servidor.', details: err.message });
     }
+});
+
+// =================================================================
+// SEÇÃO UNIDADES / FILIAIS DA EMPRESA
+// =================================================================
+app.get('/api/unidades', async (req, res) => {
+    try {
+        const { rows } = await pool.query('SELECT * FROM unidades_filiais ORDER BY nome_unidade ASC');
+        res.json(rows);
+    } catch (err) { res.status(500).json({ error: 'Erro no servidor.' }); }
+});
+
+app.post('/api/unidades', async (req, res) => {
+    const nome_unidade = req.body.nome_unidade || req.body.nome;
+    if (!nome_unidade) return res.status(400).json({ error: 'O nome da unidade é obrigatório.' });
+    try {
+        const { rows } = await pool.query('INSERT INTO unidades_filiais (nome_unidade) VALUES ($1) RETURNING id', [nome_unidade]);
+        res.status(201).json({ id: rows[0].id, nome_unidade });
+    } catch (err) {
+        if (err.code === '23505') return res.status(409).json({ error: 'Já existe uma unidade com este nome.' });
+        res.status(500).json({ error: 'Erro no servidor.', details: err.message });
+    }
+});
+
+app.put('/api/unidades/:id', async (req, res) => {
+    try {
+        const { rowCount } = await pool.query('UPDATE unidades_filiais SET nome_unidade = $1 WHERE id = $2', [req.body.nome_unidade, req.params.id]);
+        if (rowCount === 0) return res.status(404).json({ error: 'Unidade não encontrada.' });
+        res.status(200).json({ message: 'Unidade atualizada.' });
+    } catch (err) { res.status(500).json({ error: 'Erro no servidor.' }); }
+});
+
+app.delete('/api/unidades/:id', async (req, res) => {
+    try {
+        await pool.query('DELETE FROM unidades_filiais WHERE id = $1', [req.params.id]);
+        res.json({ message: 'Unidade excluída.' });
+    } catch (err) { res.status(500).json({ error: 'Erro ao excluir unidade.' }); }
+});
+
+// =================================================================
+// SEÇÃO 10: MÓDULO DE GESTÃO DE FROTA E RESERVAS
+// =================================================================
+
+app.get('/api/frota/veiculos', authMiddleware, async (req, res) => {
+    try {
+        const { status } = req.query;
+        let sql = 'SELECT v.*, u.nome_unidade FROM frota_veiculos v LEFT JOIN unidades_filiais u ON v.unidade_id = u.id';
+        const params = [];
+        if (status) {
+            sql += ' WHERE v.status = $1';
+            params.push(status);
+        } else {
+            sql += " WHERE v.status != 'Inativo'";
+        }
+        sql += ' ORDER BY v.modelo ASC';
+        const { rows } = await pool.query(sql, params);
+        res.json(rows);
+    } catch (error) {
+        console.error('Erro ao buscar veiculos:', error);
+        res.status(500).json({ error: 'Erro ao buscar veículos.' });
+    }
+});
+
+app.post('/api/frota/veiculos', authMiddleware, async (req, res) => {
+    try {
+        const v = req.body;
+        const query = `
+            INSERT INTO frota_veiculos (
+                marca, modelo, ano, placa, renavam, cor, documento_url, unidade_id, 
+                tipo_combustivel, quilometragem_atual, capacidade_tanque, lotacao_maxima, 
+                categoria, status, data_aquisicao, valor_bem, apolice_seguro, centro_custo
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) RETURNING id
+        `;
+        const { rows } = await pool.query(query, [
+            v.marca, v.modelo, v.ano || null, v.placa, v.renavam, v.cor, v.documento_url, v.unidade_id || null,
+            v.tipo_combustivel, v.quilometragem_atual || 0, v.capacidade_tanque || null, v.lotacao_maxima || null,
+            v.categoria, v.status || 'Disponível', v.data_aquisicao || null, v.valor_bem || null, v.apolice_seguro, v.centro_custo
+        ]);
+        res.status(201).json({ id: rows[0].id, message: 'Veículo cadastrado com sucesso.' });
+    } catch (error) {
+        console.error('Erro ao cadastrar veículo:', error);
+        if (error.code === '23505') return res.status(409).json({ error: 'Veículo com esta placa já cadastrado.' });
+        res.status(500).json({ error: 'Erro ao cadastrar veículo.' });
+    }
+});
+
+app.put('/api/frota/veiculos/:id', authMiddleware, async (req, res) => {
+    try {
+        const v = req.body;
+        const query = `
+            UPDATE frota_veiculos SET 
+                marca=$1, modelo=$2, ano=$3, placa=$4, renavam=$5, cor=$6, documento_url=$7, unidade_id=$8, 
+                tipo_combustivel=$9, quilometragem_atual=$10, capacidade_tanque=$11, lotacao_maxima=$12, 
+                categoria=$13, status=$14, data_aquisicao=$15, valor_bem=$16, apolice_seguro=$17, centro_custo=$18
+            WHERE id=$19
+        `;
+        await pool.query(query, [
+            v.marca, v.modelo, v.ano || null, v.placa, v.renavam, v.cor, v.documento_url, v.unidade_id || null,
+            v.tipo_combustivel, v.quilometragem_atual || 0, v.capacidade_tanque || null, v.lotacao_maxima || null,
+            v.categoria, v.status || 'Disponível', v.data_aquisicao || null, v.valor_bem || null, v.apolice_seguro, v.centro_custo,
+            req.params.id
+        ]);
+        res.json({ message: 'Veículo atualizado.' });
+    } catch (error) { res.status(500).json({ error: 'Erro ao atualizar veículo.' }); }
+});
+
+app.delete('/api/frota/veiculos/:id', authMiddleware, async (req, res) => {
+    try {
+        await pool.query("UPDATE frota_veiculos SET status = 'Inativo' WHERE id = $1", [req.params.id]);
+        res.json({ message: 'Veículo inativado.' });
+    } catch (error) { res.status(500).json({ error: 'Erro ao inativar veículo.' }); }
+});
+
+app.get('/api/frota/reservas', authMiddleware, async (req, res) => {
+    try {
+        const query = `
+            SELECT r.*, v.modelo, v.placa, f.nome_completo as solicitante 
+            FROM frota_reservas r
+            JOIN frota_veiculos v ON r.veiculo_id = v.id
+            JOIN funcionarios f ON r.usuario_id = f.id
+            ORDER BY r.data_inicio DESC
+        `;
+        const { rows } = await pool.query(query);
+        res.json(rows);
+    } catch (error) {
+        console.error('Erro ao buscar reservas:', error);
+        res.status(500).json({ error: 'Erro ao buscar reservas.' });
+    }
+});
+
+app.post('/api/frota/reservas', authMiddleware, async (req, res) => {
+    try {
+        const { veiculo_id, data_inicio, data_fim, origem, destino, motivo } = req.body;
+        const usuario_id = req.user.id;
+
+        // Busca apenas o gestor_id para a aprovação (validação de CNH removida por enquanto)
+        const { rows: userRows } = await pool.query('SELECT gestor_id FROM funcionarios WHERE id = $1', [usuario_id]);
+        const user = userRows[0];
+        
+        let aviso = null;
+
+        // Verifica choque de horário (Impede sobreposição de reservas de carros)
+        const { rows: conflitos } = await pool.query(`
+            SELECT id FROM frota_reservas WHERE veiculo_id = $1 AND status NOT IN ('Rejeitada', 'Cancelada', 'Concluída') AND (data_inicio < $3 AND data_fim > $2)
+        `, [veiculo_id, data_inicio, data_fim]);
+
+        if (conflitos.length > 0) return res.status(409).json({ error: 'O veículo já está reservado e em uso neste período.' });
+
+        const query = `INSERT INTO frota_reservas (veiculo_id, usuario_id, data_inicio, data_fim, origem, destino, motivo, gestor_aprovador_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`;
+        const { rows } = await pool.query(query, [veiculo_id, usuario_id, data_inicio, data_fim, origem, destino, motivo, user.gestor_id]);
+        
+        res.status(201).json({ id: rows[0].id, message: 'Reserva solicitada com sucesso.', aviso });
+    } catch (error) { res.status(500).json({ error: 'Erro ao solicitar reserva.' }); }
+});
+
+app.post('/api/frota/inspecoes', authMiddleware, async (req, res) => {
+    try {
+        const { reserva_id, tipo, quilometragem, nivel_combustivel, avarias, fotos } = req.body;
+        const query = `INSERT INTO frota_inspecoes (reserva_id, tipo, quilometragem, nivel_combustivel, avarias, fotos) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`;
+        const { rows } = await pool.query(query, [reserva_id, tipo, quilometragem, nivel_combustivel, avarias, JSON.stringify(fotos || [])]);
+        
+        // Atualiza km atual do veículo com base na vistoria
+        const { rows: resRows } = await pool.query('SELECT veiculo_id FROM frota_reservas WHERE id = $1', [reserva_id]);
+        if(resRows.length > 0) await pool.query('UPDATE frota_veiculos SET quilometragem_atual = $1 WHERE id = $2', [quilometragem, resRows[0].veiculo_id]);
+
+        res.status(201).json({ id: rows[0].id, message: 'Inspeção e vistoria registrada com sucesso.' });
+    } catch (error) { res.status(500).json({ error: 'Erro ao registrar vistoria.' }); }
 });
 
 // =================================================================
@@ -1727,26 +1960,58 @@ app.post("/api/clientes/import", uploadImport.single("file"), async (req, res) =
 app.get('/api/clientes', async (req, res) => {
   const ativo = (req.query.ativo ?? '1') === '1' ? 1 : 0;
   const uf = (req.query.uf || '').trim().toUpperCase();
+  const cidade = (req.query.cidade || '').trim();
   const perfil = (req.query.perfil || '').trim();
   const segmento = (req.query.segmento || '').trim();
   const search = (req.query.search || '').trim();
 
+  const page = parseInt(req.query.page) || 1;
+  const limit = parseInt(req.query.limit) || 50;
+  const offset = (page - 1) * limit;
+
   try {
-    let sql = `SELECT c.id, c.nome_cliente, c.cnpj_cpf, c.created_at, c.ativo, c.uf, c.perfil, c.segmento, COUNT(p.id) AS projetos_count FROM clientes c LEFT JOIN projetos p ON p.cliente_id = c.id WHERE c.ativo = $1`;
+    let baseSql = `FROM clientes c LEFT JOIN projetos p ON p.cliente_id = c.id WHERE c.ativo = $1`;
     const params = [ativo];
     let count = 2;
 
-    if (uf) { sql += ` AND c.uf = $${count++}`; params.push(uf); }
-    if (perfil) { sql += ` AND c.perfil = $${count++}`; params.push(perfil); }
-    if (segmento) { sql += ` AND c.segmento LIKE $${count++}`; params.push(`%${segmento}%`); }
+    if (uf) { baseSql += ` AND c.uf = $${count++}`; params.push(uf); }
+    if (cidade) { baseSql += ` AND c.cidade ILIKE $${count++}`; params.push(`%${cidade}%`); }
+    if (perfil) { baseSql += ` AND c.perfil = $${count++}`; params.push(perfil); }
+    if (segmento) { baseSql += ` AND c.segmento ILIKE $${count++}`; params.push(`%${segmento}%`); }
     if (search) { 
-        sql += ` AND (c.nome_cliente ILIKE $${count} OR c.cnpj_cpf ILIKE $${count+1} OR c.razao_social ILIKE $${count+2} OR c.nome_fantasia ILIKE $${count+3})`;
+        baseSql += ` AND (c.nome_cliente ILIKE $${count} OR c.cnpj_cpf ILIKE $${count+1} OR c.razao_social ILIKE $${count+2} OR c.nome_fantasia ILIKE $${count+3})`;
         params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`); 
+        count += 4;
     }
-    sql += ` GROUP BY c.id, c.nome_cliente, c.cnpj_cpf, c.created_at, c.ativo, c.uf, c.perfil, c.segmento ORDER BY c.nome_cliente ASC`;
 
-    const { rows } = await pool.query(sql, params);
-    res.json(rows);
+    const countSql = `SELECT COUNT(DISTINCT c.id) as total ${baseSql}`;
+    const projetosAndamentoSql = `SELECT COUNT(DISTINCT p.id) as total_projetos ${baseSql} AND p.etapa_funil NOT IN ('Fechado', 'Perdido', 'Ganho')`;
+    const clientesMesSql = `SELECT COUNT(DISTINCT c.id) as total_mes ${baseSql} AND EXTRACT(MONTH FROM c.created_at) = EXTRACT(MONTH FROM CURRENT_DATE) AND EXTRACT(YEAR FROM c.created_at) = EXTRACT(YEAR FROM CURRENT_DATE)`;
+
+    const dataSql = `SELECT c.id, c.nome_cliente, c.cnpj_cpf, c.created_at, c.ativo, c.uf, c.cidade, c.perfil, c.segmento, COUNT(p.id) AS projetos_count 
+                     ${baseSql} 
+                     GROUP BY c.id, c.nome_cliente, c.cnpj_cpf, c.created_at, c.ativo, c.uf, c.cidade, c.perfil, c.segmento 
+                     ORDER BY c.nome_cliente ASC 
+                     LIMIT $${count++} OFFSET $${count++}`;
+
+    const countParams = [...params];
+    params.push(limit, offset);
+
+    const totalResult = await pool.query(countSql, countParams);
+    const projetosResult = await pool.query(projetosAndamentoSql, countParams);
+    const clientesMesResult = await pool.query(clientesMesSql, countParams);
+    const { rows } = await pool.query(dataSql, params);
+
+    const totalCount = parseInt(totalResult.rows[0].total) || 0;
+
+    res.json({
+        data: rows,
+        total: totalCount,
+        page: page,
+        totalPages: Math.ceil(totalCount / limit),
+        totalProjetosAndamento: parseInt(projetosResult.rows[0].total_projetos || 0),
+        totalClientesMes: parseInt(clientesMesResult.rows[0].total_mes || 0)
+    });
   } catch (err) { 
       console.error('❌ Erro na rota /api/clientes:', err);
       res.status(500).json({ error: 'Erro no servidor' }); 
@@ -1759,7 +2024,7 @@ app.get('/api/clientes/:id', async (req, res) => {
     if (!clienteRows[0]) return res.status(404).json({ error: 'Cliente não encontrado' });
 
     const { rows: contatos } = await pool.query(`SELECT * FROM cliente_contatos WHERE cliente_id = $1 ORDER BY principal DESC, nome ASC`, [req.params.id]);
-    const { rows: filiais } = await pool.query(`SELECT * FROM cliente_filiais WHERE cliente_id = $1 ORDER BY cnpj_filial ASC`, [req.params.id]);
+    const { rows: filiais } = await pool.query(`SELECT id, cliente_id, cnpj as cnpj_filial, razao_social, nome_fantasia, cep, logradouro, numero, complemento, bairro, cidade, uf, created_at FROM cliente_filiais WHERE cliente_id = $1 ORDER BY cnpj ASC`, [req.params.id]);
     const { rows: projetos } = await pool.query(`SELECT id, nome_projeto, etapa_funil, valor_estimado, moeda, updated_at FROM projetos WHERE cliente_id = $1 ORDER BY updated_at DESC`, [req.params.id]);
 
     res.json({ cliente: clienteRows[0], contatos, filiais, projetos });
@@ -1818,7 +2083,7 @@ app.delete('/api/clientes/:id', async (req, res) => {
 // [PG] Refatorado rota de filiais removendo resquícios de driver SQLite antigo (db.run / db.all)
 app.get('/api/clientes/:id/filiais', async (req, res) => {
     try {
-        const { rows } = await pool.query(`SELECT * FROM cliente_filiais WHERE cliente_id = $1 ORDER BY id DESC`, [req.params.id]);
+        const { rows } = await pool.query(`SELECT id, cliente_id, cnpj as cnpj_filial, razao_social, nome_fantasia, cep, logradouro, numero, complemento, bairro, cidade, uf, created_at FROM cliente_filiais WHERE cliente_id = $1 ORDER BY id DESC`, [req.params.id]);
         res.json(rows);
     } catch(err) { res.status(500).json({ error: 'Erro ao buscar filiais' }) }
 });
@@ -1827,7 +2092,7 @@ app.post('/api/clientes/:id/filiais', async (req, res) => {
     try {
         const p = req.body;
         const sql = `INSERT INTO cliente_filiais (cliente_id, cnpj, razao_social, nome_fantasia, cep, logradouro, numero, complemento, bairro, cidade, uf) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`;
-        const { rows } = await pool.query(sql, [req.params.id, (p.cnpj||'').replace(/\D/g, ''), p.razao_social, p.nome_fantasia, p.cep, p.logradouro, p.numero, p.complemento, p.bairro, p.cidade, p.uf]);
+        const { rows } = await pool.query(sql, [req.params.id, (p.cnpj||p.cnpj_filial||'').replace(/\D/g, ''), p.razao_social, p.nome_fantasia, p.cep, p.logradouro, p.numero, p.complemento, p.bairro, p.cidade, p.uf]);
         res.json({ id: rows[0].id, ...p });
     } catch(err) { res.status(500).json({ error: 'Erro ao salvar filial' }); }
 });
@@ -1835,6 +2100,76 @@ app.post('/api/clientes/:id/filiais', async (req, res) => {
 app.delete('/api/clientes/filiais/:filialId', async (req, res) => {
   await pool.query('DELETE FROM cliente_filiais WHERE id = $1', [req.params.filialId]);
   res.json({ message: 'Filial removida' });
+});
+
+app.post('/api/contatos', authMiddleware, async (req, res) => {
+    try {
+        const { cliente_id, nome, cargo, email, telefone, whatsapp, principal, observacoes } = req.body;
+        const query = `INSERT INTO cliente_contatos (cliente_id, nome, cargo, email, telefone, whatsapp, principal, observacoes) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`;
+        const { rows } = await pool.query(query, [cliente_id, nome, cargo, email, telefone, whatsapp, principal ? TRUE : FALSE, observacoes]);
+        res.status(201).json({ id: rows[0].id });
+    } catch (err) {
+        console.error('Erro ao salvar contato:', err);
+        res.status(500).json({ error: 'Erro no servidor' });
+    }
+});
+
+app.put('/api/contatos/:id', authMiddleware, async (req, res) => {
+    try {
+        const { nome, cargo, email, telefone, whatsapp, principal, observacoes } = req.body;
+        await pool.query(`UPDATE cliente_contatos SET nome = $1, cargo = $2, email = $3, telefone = $4, whatsapp = $5, principal = $6, observacoes = $7 WHERE id = $8`, [nome, cargo, email, telefone, whatsapp, principal ? TRUE : FALSE, observacoes, req.params.id]);
+        res.json({ message: 'Contato atualizado' });
+    } catch (err) {
+        console.error('Erro ao atualizar contato:', err);
+        res.status(500).json({ error: 'Erro no servidor' });
+    }
+});
+
+app.delete('/api/contatos/:id', authMiddleware, async (req, res) => {
+    try {
+        await pool.query('DELETE FROM cliente_contatos WHERE id = $1', [req.params.id]);
+        res.json({ message: 'Contato removido' });
+    } catch (err) {
+        console.error('Erro ao remover contato:', err);
+        res.status(500).json({ error: 'Erro no servidor' });
+    }
+});
+
+app.get('/api/clientes/:id/interacoes', authMiddleware, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const sql = `
+            SELECT 
+                v.id, 
+                v.data_visita as data, 
+                'Visita Comercial' as tipo, 
+                v.justificativa_objetivo as descricao, 
+                f.nome_completo as responsavel 
+            FROM visitas v
+            LEFT JOIN funcionarios f ON v.vendedor_id = f.id
+            WHERE v.cliente_id = $1
+
+            UNION ALL
+
+            SELECT 
+                pa.id, 
+                pa.created_at::date as data, 
+                COALESCE(pa.tipo_atividade, 'Atividade de Projeto') as tipo, 
+                pa.descricao as descricao, 
+                f.nome_completo as responsavel 
+            FROM projeto_atividades pa
+            JOIN projetos p ON pa.projeto_id = p.id
+            LEFT JOIN funcionarios f ON pa.usuario_id = f.id
+            WHERE p.cliente_id = $1
+
+            ORDER BY data DESC
+        `;
+        const { rows } = await pool.query(sql, [id]);
+        res.json(rows);
+    } catch (err) {
+        console.error('Erro ao buscar interações do cliente:', err);
+        res.status(500).json({ error: 'Erro no servidor' });
+    }
 });
 
 // APIs Públicas
